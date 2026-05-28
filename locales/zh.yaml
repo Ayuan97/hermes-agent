@@ -352,3 +352,35 @@ gateway:
     session_db_unavailable_prefix: "会话数据库不可用"
     session_not_found:           "数据库中未找到该会话。"
     warn_passthrough:            "⚠️ {error}"
+
+# 工具进度气泡的中文短语 -- gateway/TUI 在汇报工具调用时使用。
+# build_tool_preview() 会查 "tools.preview.*"；
+# gateway 会查 "tools.display_name.*" 来本地化工具标识。
+tools:
+  preview:
+    todo_reading:          "读取任务列表"
+    todo_planning:         "规划 {count} 个任务"
+    todo_updating:         "更新 {count} 个任务"
+    session_search_recall: "回忆：「{query}」"
+    memory_missing_old:    "<缺少 old_text>"
+    send_message_to:       "发往 {target}：「{msg}」"
+  display_name:
+    skill_view:            "技能详情"
+    skills_list:           "技能列表"
+    todo:                  "任务计划"
+    terminal:              "终端"
+    web_search:            "网络搜索"
+    web_extract:           "网页抽取"
+    read_file:             "读取文件"
+    write_file:            "写入文件"
+    patch:                 "改写文件"
+    search_files:          "文件搜索"
+    execute_code:          "执行代码"
+    delegate_task:         "委派任务"
+    memory:                "记忆"
+    session_search:        "会话回忆"
+    send_message:          "发送消息"
+    cronjob:               "定时任务"
+    text_to_speech:        "语音合成"
+    image_generate:        "生成图片"
+    vision_analyze:        "图像分析"

@@ -8,7 +8,9 @@ from agent.display import (
     build_tool_preview,
     capture_local_edit_snapshot,
     extract_edit_diff,
+    format_tool_progress_line,
     get_cute_tool_message,
+    get_tool_display_name,
     set_tool_preview_max_len,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
@@ -109,6 +111,199 @@ class TestBuildToolPreview:
         assert build_tool_preview("terminal", 0) is None
         assert build_tool_preview("terminal", "") is None
         assert build_tool_preview("terminal", []) is None
+
+
+class TestBuildToolPreviewLocalization:
+    """build_tool_preview(lang=...) localizes dynamic English fragments.
+
+    The English / default behavior must stay byte-identical so legacy callers
+    (CLI spinner, API server SSE) keep their current output; the Chinese path
+    only kicks in when ``lang="zh"`` is passed explicitly.
+    """
+
+    def test_todo_planning_zh(self):
+        result = build_tool_preview(
+            "todo",
+            {"todos": [{"id": "1"}, {"id": "2"}, {"id": "3"}]},
+            lang="zh",
+        )
+        assert result == "规划 3 个任务"
+
+    def test_todo_updating_zh(self):
+        result = build_tool_preview(
+            "todo",
+            {"todos": [{"id": "1"}], "merge": True},
+            lang="zh",
+        )
+        assert result == "更新 1 个任务"
+
+    def test_todo_reading_zh(self):
+        result = build_tool_preview("todo", {"merge": False}, lang="zh")
+        assert result == "读取任务列表"
+
+    def test_todo_planning_default_unchanged(self):
+        """No lang -> existing English phrasing, unchanged for legacy callers."""
+        result = build_tool_preview(
+            "todo", {"todos": [{"id": "1"}, {"id": "2"}, {"id": "3"}]},
+        )
+        assert result == "planning 3 task(s)"
+
+    def test_todo_planning_explicit_en(self):
+        """Explicit lang='en' must match the no-lang default."""
+        result = build_tool_preview(
+            "todo", {"todos": [{"id": "1"}]}, lang="en",
+        )
+        assert result == "planning 1 task(s)"
+
+    def test_session_search_zh_uses_chinese_recall_phrase(self):
+        result = build_tool_preview(
+            "session_search", {"query": "找点东西"}, lang="zh",
+        )
+        assert result is not None
+        assert "回忆" in result
+        assert "找点东西" in result
+
+    def test_memory_replace_missing_old_zh(self):
+        result = build_tool_preview(
+            "memory", {"action": "replace", "target": "user"}, lang="zh",
+        )
+        assert result == '~user: "<缺少 old_text>"'
+
+    def test_send_message_zh(self):
+        result = build_tool_preview(
+            "send_message", {"target": "alice", "message": "hi"}, lang="zh",
+        )
+        assert result == '发往 alice：「hi」'
+
+    def test_unknown_lang_falls_back_to_english(self):
+        """Garbage lang values should not crash, just stay in English."""
+        result = build_tool_preview(
+            "todo", {"todos": [{"id": "1"}]}, lang="klingon",
+        )
+        assert result == "planning 1 task(s)"
+
+    def test_skill_view_preview_independent_of_lang(self):
+        """Primary-arg passthrough tools don't localize -- the *name* arg is
+        a skill identifier and must stay verbatim regardless of locale."""
+        en = build_tool_preview("skill_view", {"name": "wiki"})
+        zh = build_tool_preview("skill_view", {"name": "wiki"}, lang="zh")
+        assert en == "wiki"
+        assert zh == "wiki"
+
+
+class TestGetToolDisplayName:
+    def test_default_returns_tool_name(self):
+        assert get_tool_display_name("skill_view") == "skill_view"
+
+    def test_english_returns_tool_name(self):
+        assert get_tool_display_name("skill_view", lang="en") == "skill_view"
+
+    def test_zh_overrides_known_tools(self):
+        assert get_tool_display_name("skill_view", lang="zh") == "技能详情"
+        assert get_tool_display_name("todo", lang="zh") == "任务计划"
+        assert get_tool_display_name("terminal", lang="zh") == "终端"
+
+    def test_zh_unknown_tool_falls_back(self):
+        assert get_tool_display_name("imaginary_tool", lang="zh") == "imaginary_tool"
+
+    def test_unknown_lang_falls_back(self):
+        assert get_tool_display_name("skill_view", lang="klingon") == "skill_view"
+
+    def test_empty_tool_name(self):
+        assert get_tool_display_name("", lang="zh") == ""
+
+
+class TestFormatToolProgressLine:
+    """The gateway bubble formatter is a pure function so we can pin its
+    output exactly without spinning up the messaging runtime."""
+
+    def test_short_mode_english(self):
+        line = format_tool_progress_line(
+            "skill_view",
+            {"name": "wiki"},
+            emoji="📚",
+            mode="all",
+        )
+        assert line == '📚 skill_view: "wiki"'
+
+    def test_short_mode_zh_localizes_name_and_preview(self):
+        line = format_tool_progress_line(
+            "todo",
+            {"todos": [{"id": "1"}, {"id": "2"}, {"id": "3"}]},
+            emoji="📝",
+            mode="all",
+            lang="zh",
+        )
+        assert line == '📝 任务计划：「规划 3 个任务」'
+
+    def test_skill_view_zh_bubble(self):
+        """Exact regression scenario from the user complaint: a Chinese user
+        seeing "skill_view: ..." should now see "技能详情：..."."""
+        line = format_tool_progress_line(
+            "skill_view",
+            {"name": "wiki"},
+            emoji="📚",
+            mode="all",
+            lang="zh",
+        )
+        assert line == '📚 技能详情：「wiki」'
+
+    def test_short_mode_falls_back_when_no_preview(self):
+        line = format_tool_progress_line(
+            "skill_view",
+            None,
+            emoji="📚",
+            preview=None,
+            mode="all",
+        )
+        assert line == "📚 skill_view..."
+
+    def test_short_mode_truncates_to_cap(self):
+        line = format_tool_progress_line(
+            "terminal",
+            {"command": "a" * 100},
+            emoji="⚡",
+            mode="all",
+            preview_cap=20,
+        )
+        assert line.endswith('..."')
+        assert len(line) <= 40  # emoji + name + quotes + 20 chars + ellipsis
+
+    def test_verbose_mode_dumps_args(self):
+        line = format_tool_progress_line(
+            "skill_view",
+            {"name": "wiki"},
+            emoji="📚",
+            mode="verbose",
+            preview_cap=0,
+        )
+        assert "skill_view(['name'])" in line
+        assert '"name": "wiki"' in line
+
+    def test_verbose_mode_zh_uses_localized_name(self):
+        line = format_tool_progress_line(
+            "skill_view",
+            {"name": "wiki"},
+            emoji="📚",
+            mode="verbose",
+            lang="zh",
+            preview_cap=0,
+        )
+        assert "技能详情(['name'])" in line
+
+    def test_explicit_preview_overrides_derivation(self):
+        """If the caller pre-computed a preview, the formatter uses it
+        instead of recomputing from args -- lets the gateway pass through
+        the localized preview the agent core already built."""
+        line = format_tool_progress_line(
+            "todo",
+            {"todos": [{"id": "1"}]},
+            emoji="📝",
+            preview="custom preview",
+            mode="all",
+            lang="en",
+        )
+        assert line == '📝 todo: "custom preview"'
 
 
 class TestCuteToolMessagePreviewLength:

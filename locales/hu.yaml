@@ -352,3 +352,35 @@ gateway:
     session_db_unavailable_prefix: "A munkamenet-adatbázis nem érhető el"
     session_not_found:           "A munkamenet nem található az adatbázisban."
     warn_passthrough:            "⚠️ {error}"
+
+# Tool progress bubble labels -- short phrases the gateway / TUI shows when
+# reporting tool calls.  English identity values until a translator localizes
+# them; build_tool_preview() and the gateway both fall back gracefully.
+tools:
+  preview:
+    todo_reading:          "reading task list"
+    todo_planning:         "planning {count} task(s)"
+    todo_updating:         "updating {count} task(s)"
+    session_search_recall: "recall: \"{query}\""
+    memory_missing_old:    "<missing old_text>"
+    send_message_to:       "to {target}: \"{msg}\""
+  display_name:
+    skill_view:            "skill_view"
+    skills_list:           "skills_list"
+    todo:                  "todo"
+    terminal:              "terminal"
+    web_search:            "web_search"
+    web_extract:           "web_extract"
+    read_file:             "read_file"
+    write_file:            "write_file"
+    patch:                 "patch"
+    search_files:          "search_files"
+    execute_code:          "execute_code"
+    delegate_task:         "delegate_task"
+    memory:                "memory"
+    session_search:        "session_search"
+    send_message:          "send_message"
+    cronjob:               "cronjob"
+    text_to_speech:        "text_to_speech"
+    image_generate:        "image_generate"
+    vision_analyze:        "vision_analyze"

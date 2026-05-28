@@ -168,11 +168,70 @@ def _oneline(text: str) -> str:
     return " ".join(text.split())
 
 
-def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
+def _preview_str(key: str, default: str, lang: str | None, **fmt) -> str:
+    """Look up a tools.preview.* string in the i18n catalog.
+
+    Falls back to *default* (English) when ``lang`` is None / English / the
+    catalog is missing the key.  Keeps the existing default-English contract
+    of build_tool_preview when no locale is requested.
+    """
+    if not lang:
+        return default.format(**fmt) if fmt else default
+    try:
+        from agent.i18n import t, DEFAULT_LANGUAGE, _normalize_lang
+        normalized = _normalize_lang(lang)
+        if normalized == DEFAULT_LANGUAGE:
+            return default.format(**fmt) if fmt else default
+        value = t(f"tools.preview.{key}", lang=normalized, **fmt)
+        # t() returns the key path itself when both target+English are missing;
+        # treat that as a miss and fall back to the inline English default so
+        # we never expose a raw key to the user.
+        if value == f"tools.preview.{key}":
+            return default.format(**fmt) if fmt else default
+        return value
+    except Exception:
+        return default.format(**fmt) if fmt else default
+
+
+def get_tool_display_name(tool_name: str, lang: str | None = None) -> str:
+    """Return a human-friendly tool name for progress bubbles.
+
+    English (and unknown lang) returns the bare schema name -- the tool's
+    English identifier is what code, logs, and tool schema all use, so the
+    default behavior is unchanged.  Non-English locales may override via the
+    ``tools.display_name.<tool>`` key in their catalog; misses also fall back
+    to the schema name so users never see a raw key path.
+    """
+    if not lang or not tool_name:
+        return tool_name
+    try:
+        from agent.i18n import t, DEFAULT_LANGUAGE, _normalize_lang
+        normalized = _normalize_lang(lang)
+        if normalized == DEFAULT_LANGUAGE:
+            return tool_name
+        key = f"tools.display_name.{tool_name}"
+        value = t(key, lang=normalized)
+        if value == key or not value:
+            return tool_name
+        return value
+    except Exception:
+        return tool_name
+
+
+def build_tool_preview(
+    tool_name: str,
+    args: dict,
+    max_len: int | None = None,
+    lang: str | None = None,
+) -> str | None:
     """Build a short preview of a tool call's primary argument for display.
 
     *max_len* controls truncation.  ``None`` (default) defers to the global
     ``_tool_preview_max_len`` set via config; ``0`` means unlimited.
+
+    *lang* selects a localized phrasing for the dynamic English fragments
+    ("planning N task(s)", "recall: ...", "to user: ...", etc.).  ``None``
+    (default) keeps the existing English output verbatim.
     """
     if max_len is None:
         max_len = _tool_preview_max_len
@@ -209,27 +268,38 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         todos_arg = args.get("todos")
         merge = args.get("merge", False)
         if todos_arg is None:
-            return "reading task list"
+            return _preview_str("todo_reading", "reading task list", lang)
         elif merge:
-            return f"updating {len(todos_arg)} task(s)"
+            return _preview_str(
+                "todo_updating", "updating {count} task(s)", lang,
+                count=len(todos_arg),
+            )
         else:
-            return f"planning {len(todos_arg)} task(s)"
+            return _preview_str(
+                "todo_planning", "planning {count} task(s)", lang,
+                count=len(todos_arg),
+            )
 
     if tool_name == "session_search":
         query = _oneline(args.get("query", ""))
-        return f"recall: \"{query[:25]}{'...' if len(query) > 25 else ''}\""
+        truncated = f"{query[:25]}{'...' if len(query) > 25 else ''}"
+        return _preview_str(
+            "session_search_recall", "recall: \"{query}\"", lang,
+            query=truncated,
+        )
 
     if tool_name == "memory":
         action = args.get("action", "")
         target = args.get("target", "")
+        missing = _preview_str("memory_missing_old", "<missing old_text>", lang)
         if action == "add":
             content = _oneline(args.get("content", ""))
             return f"+{target}: \"{content[:25]}{'...' if len(content) > 25 else ''}\""
         elif action == "replace":
-            old = _oneline(args.get("old_text") or "") or "<missing old_text>"
+            old = _oneline(args.get("old_text") or "") or missing
             return f"~{target}: \"{old[:20]}\""
         elif action == "remove":
-            old = _oneline(args.get("old_text") or "") or "<missing old_text>"
+            old = _oneline(args.get("old_text") or "") or missing
             return f"-{target}: \"{old[:20]}\""
         return action
 
@@ -238,7 +308,10 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         msg = _oneline(args.get("message", ""))
         if len(msg) > 20:
             msg = msg[:17] + "..."
-        return f"to {target}: \"{msg}\""
+        return _preview_str(
+            "send_message_to", "to {target}: \"{msg}\"", lang,
+            target=target, msg=msg,
+        )
 
     key = primary_args.get(tool_name)
     if not key:
@@ -260,6 +333,61 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     if max_len > 0 and len(preview) > max_len:
         preview = preview[:max_len - 3] + "..."
     return preview
+
+
+def format_tool_progress_line(
+    tool_name: str,
+    args: dict | None,
+    *,
+    emoji: str | None = None,
+    preview: str | None = None,
+    mode: str = "all",
+    lang: str | None = None,
+    preview_cap: int = 40,
+) -> str:
+    """Format the one-line progress bubble shown by the gateway.
+
+    Pure helper -- no IO, no globals -- so it can be unit-tested without
+    spinning up the gateway.  ``mode`` accepts ``"all"`` / ``"new"`` (short
+    preview) or ``"verbose"`` (full JSON args).  ``lang`` selects the
+    localized tool display name and preview phrasing; ``None`` matches the
+    historical English output.
+    """
+    if emoji is None:
+        emoji = get_tool_emoji(tool_name, default="⚙️")
+    display = get_tool_display_name(tool_name, lang=lang) if lang else tool_name
+
+    localized_punctuation = False
+    if lang:
+        try:
+            from agent.i18n import DEFAULT_LANGUAGE, _normalize_lang
+            localized_punctuation = _normalize_lang(lang) != DEFAULT_LANGUAGE
+        except Exception:
+            localized_punctuation = False
+    separator = "：" if localized_punctuation else ": "
+    left_quote = "「" if localized_punctuation else '"'
+    right_quote = "」" if localized_punctuation else '"'
+    ellipsis = "…" if localized_punctuation else "..."
+
+    if mode == "verbose":
+        if args:
+            import json as _json
+            args_str = _json.dumps(args, ensure_ascii=False, default=str)
+            if preview_cap > 0 and len(args_str) > preview_cap:
+                args_str = args_str[: max(preview_cap - 3, 0)] + "..."
+            return f"{emoji} {display}({list(args.keys())})\n{args_str}"
+        if preview:
+            return f"{emoji} {display}{separator}{left_quote}{preview}{right_quote}"
+        return f"{emoji} {display}{ellipsis}"
+
+    # "all" / "new" modes: short preview, capped.
+    if preview is None and args is not None:
+        preview = build_tool_preview(tool_name, args, lang=lang)
+    if preview:
+        if preview_cap > 0 and len(preview) > preview_cap:
+            preview = preview[: preview_cap - 3] + "..."
+        return f"{emoji} {display}{separator}{left_quote}{preview}{right_quote}"
+    return f"{emoji} {display}{ellipsis}"
 
 
 # =========================================================================

@@ -16286,42 +16286,54 @@ class GatewayRunner:
             if progress_mode == "new" and tool_name == last_tool[0]:
                 return
             last_tool[0] = tool_name
-            
-            # Build progress message with primary argument preview
-            from agent.display import get_tool_emoji
+
+            # Build progress message with primary argument preview.  The
+            # actual formatting lives in agent.display.format_tool_progress_line
+            # so it can be unit-tested without the gateway runtime.  ``lang``
+            # picks up the user's display.language (env > config > default) so
+            # bilingual setups see "技能详情：「foo」" instead of
+            # "skill_view: \"foo\"".
+            from agent.display import (
+                build_tool_preview,
+                format_tool_progress_line,
+                get_tool_emoji,
+                get_tool_preview_max_len,
+            )
+            from agent.i18n import get_language
+
             emoji = get_tool_emoji(tool_name, default="⚙️")
-            
-            # Verbose mode: show detailed arguments, respects tool_preview_length
+            _pl = get_tool_preview_max_len()
+            _lang = get_language()
+
             if progress_mode == "verbose":
-                if args:
-                    from agent.display import get_tool_preview_max_len
-                    _pl = get_tool_preview_max_len()
-                    args_str = json.dumps(args, ensure_ascii=False, default=str)
-                    # When tool_preview_length is 0 (default), don't truncate
-                    # in verbose mode — the user explicitly asked for full
-                    # detail.  Platform message-length limits handle the rest.
-                    if _pl > 0 and len(args_str) > _pl:
-                        args_str = args_str[:_pl - 3] + "..."
-                    msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
-                elif preview:
-                    msg = f"{emoji} {tool_name}: \"{preview}\""
-                else:
-                    msg = f"{emoji} {tool_name}..."
+                # In verbose mode the user explicitly asked for full detail,
+                # so 0 (unlimited) is fine -- platform message-length limits
+                # handle the rest.
+                _verbose_cap = _pl if _pl > 0 else 0
+                msg = format_tool_progress_line(
+                    tool_name, args,
+                    emoji=emoji, preview=preview, mode="verbose",
+                    lang=_lang, preview_cap=_verbose_cap,
+                )
                 progress_queue.put(msg)
                 return
-            
+
             # "all" / "new" modes: short preview, respects tool_preview_length
-            # config (defaults to 40 chars when unset to keep gateway messages
-            # compact — unlike CLI spinners, these persist as permanent messages).
-            if preview:
-                from agent.display import get_tool_preview_max_len
-                _pl = get_tool_preview_max_len()
-                _cap = _pl if _pl > 0 else 40
-                if len(preview) > _cap:
-                    preview = preview[:_cap - 3] + "..."
-                msg = f"{emoji} {tool_name}: \"{preview}\""
-            else:
-                msg = f"{emoji} {tool_name}..."
+            # (defaults to 40 chars when unset to keep gateway messages compact
+            # -- unlike CLI spinners, these persist as permanent messages).
+            _cap = _pl if _pl > 0 else 40
+            # Re-derive the preview from args under the active locale so
+            # dynamic phrases like "planning 3 task(s)" become "规划 3 个任务"
+            # instead of leaking the English fragment the agent core built.
+            _localized_preview = (
+                build_tool_preview(tool_name, args, lang=_lang)
+                if args is not None else preview
+            )
+            msg = format_tool_progress_line(
+                tool_name, args,
+                emoji=emoji, preview=_localized_preview, mode="all",
+                lang=_lang, preview_cap=_cap,
+            )
             
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
